@@ -5,117 +5,155 @@ from dateutil import parser as date_parser
 
 # ---------------- CONFIG ----------------
 
-# 🔴 REPLACE WITH YOUR NEWSDATA.IO API KEY
-API_KEY = "pub_79ae5e4589834c119ff26d5c5506cb62"
+# 🔴 REPLACE THIS WITH YOUR REAL NEWSAPI KEY
+API_KEY = "aa09c77c5ad841ebaaf1ec387e74f4ab"  # e.g. "eHdpLknQzjxQJSseM0eJjekQM55WsBFZhepT49rf"
 
-ARCHIVE_ENDPOINT = "https://newsdata.io/api/1/archive"
+NEWSAPI_ENDPOINT = "https://newsapi.org/v2/everything"
 
-# Number of days you want (3–4 as you said)
-DAYS_BACK = 4
+# How many days of news you want (you asked for 3–4 days)
+DAYS_BACK = 3  # change to 4 if you want 4 days
 
+# Topic-specific query templates
 TOPIC_QUERIES = {
-    "banking": "banking OR banks OR retail banking",
+    "banking": 'banking OR "banking sector" OR "retail banking"',
     "digital": '"digital banking" OR "online banking" OR "mobile banking"',
     "transformation": '"digital transformation" AND banking',
-    "fintech": "fintech OR financial technology",
-    "neobanks": "neobank OR challenger bank",
-    "payments": '"digital payments" OR UPI OR RTGS',
-    "ai_in_banking": '"AI in banking" OR "artificial intelligence" AND banking',
+    "fintech": 'fintech OR "financial technology" AND banking',
+    "neobanks": 'neobank OR "neo bank" OR "digital-only bank" OR "challenger bank"',
+    "payments": '"digital payments" OR "payment rails" OR RTGS OR UPI OR "real-time payments"',
+    "ai_in_banking": '"AI in banking" OR "artificial intelligence" AND banking OR "machine learning" AND banking',
 }
 
 
 # ---------------- HELPERS ----------------
 
-def parse_date(date_str):
+def normalize_published(published_str: str | None) -> datetime:
+    """Convert NewsAPI date string to datetime object."""
+    if not published_str:
+        return datetime.utcnow()
     try:
-        return date_parser.parse(date_str)
-    except:
+        dt = date_parser.parse(published_str)
+        return dt
+    except Exception:
         return datetime.utcnow()
 
 
-def fetch_newsdata_archive(query, days_back=DAYS_BACK, max_pages=5):
-    """Fetches articles using the correct /archive endpoint."""
-    all_articles = []
+def fetch_news(query: str, days_back: int = DAYS_BACK, max_pages: int = 3) -> list[dict]:
+    """
+    Fetch articles from NewsAPI 'everything' endpoint.
+
+    - query: text query
+    - days_back: how many days back to include
+    - max_pages: how many pages (100 results/page) to fetch
+
+    NewsAPI free tier: 100 results per page, limited daily quota.
+    """
+    all_articles: list[dict] = []
 
     to_date = datetime.utcnow()
     from_date = to_date - timedelta(days=days_back)
 
+    # NewsAPI accepts ISO8601. Date only is also fine: YYYY-MM-DD
     from_str = from_date.strftime("%Y-%m-%d")
     to_str = to_date.strftime("%Y-%m-%d")
 
-    next_page = None
-    pages_fetched = 0
+    page = 1
+    page_size = 100  # max allowed
 
-    while pages_fetched < max_pages:
+    while page <= max_pages:
         params = {
-            "apikey": API_KEY,
             "q": query,
             "language": "en",
-            "from_date": from_str,
-            "to_date": to_str,
-            "page": next_page,
+            "sortBy": "publishedAt",
+            "from": from_str,
+            "to": to_str,
+            "pageSize": page_size,
+            "page": page,
+            "apiKey": API_KEY,
         }
 
-        resp = requests.get(ARCHIVE_ENDPOINT, params=params, timeout=20)
+        resp = requests.get(NEWSAPI_ENDPOINT, params=params, timeout=20)
+
+        if resp.status_code == 401:
+            st.error("NewsAPI returned 401 (unauthorized). Check your API key.")
+            break
 
         if resp.status_code != 200:
-            st.error(f"NewsData.io ERROR {resp.status_code}: {resp.text[:300]}")
+            st.error(
+                f"NewsAPI error (status {resp.status_code}) on page {page}: "
+                f"{resp.text[:200]}"
+            )
             break
 
         data = resp.json()
 
-        if data.get("status") != "success":
-            st.error(f"NewsData.io Error: {data}")
+        if data.get("status") != "ok":
+            st.error(f"NewsAPI returned error JSON: {data}")
             break
 
-        results = data.get("results", [])
-        if not results:
+        articles = data.get("articles", [])
+        if not articles:
             break
 
-        for item in results:
-            title = item.get("title")
-            url = item.get("link")
-            if not title or not url:
+        for article in articles:
+            title = article.get("title") or "No Title"
+            url = article.get("url")
+            if not url:
                 continue
 
-            summary = item.get("description") or item.get("content") or ""
+            description = article.get("description") or ""
+            content = article.get("content") or ""
+            text = description if description else content
+
+            # Short snippet (around 2 lines)
             max_chars = 260
-            if len(summary) > max_chars:
-                summary = summary[:max_chars].rsplit(" ", 1)[0] + "..."
+            if text and len(text) > max_chars:
+                snippet = text[:max_chars].rsplit(" ", 1)[0] + "..."
+            else:
+                snippet = text
 
-            source = (item.get("source") or {}).get("name") or "Unknown"
-            pub_date = parse_date(item.get("pubDate"))
-            image_url = item.get("image_url")
+            source_name = (article.get("source") or {}).get("name") or "Unknown"
+            published_raw = article.get("publishedAt")
+            published_at = normalize_published(published_raw)
 
-            all_articles.append({
-                "title": title,
-                "url": url,
-                "summary": summary,
-                "source": source,
-                "published_at": pub_date,
-                "image": image_url,
-            })
+            all_articles.append(
+                {
+                    "title": title,
+                    "url": url,
+                    "summary": snippet,
+                    "source": source_name,
+                    "published_at": published_at,
+                    "image": article.get("urlToImage"),
+                }
+            )
 
-        next_page = data.get("nextPage")
-        if not next_page:
+        # If fewer than page_size results returned, no more pages
+        if len(articles) < page_size:
             break
 
-        pages_fetched += 1
+        page += 1
 
-    # Sort by latest first
+    # Sort newest first
     all_articles.sort(key=lambda x: x["published_at"], reverse=True)
     return all_articles
 
 
 # ---------------- STREAMLIT UI ----------------
 
-st.set_page_config(page_title="Banking & Fintech News", layout="wide")
+st.set_page_config(page_title="Banking & Fintech News (NewsAPI)", layout="wide")
 
 st.title("📰 Banking, Fintech & Digital Transformation News")
-st.caption(f"Live news (past {DAYS_BACK} days) from NewsData.io archive endpoint.")
+st.caption(
+    f"Live news from NewsAPI.org — last {DAYS_BACK} day(s), "
+    "sorted by recency with topic filters and search."
+)
 
-search_query = st.text_input("🔍 Search any keyword (RBI, UPI, fintech funding...):")
+# Search bar (overrides topics if used)
+search_query = st.text_input(
+    "🔍 Search any keyword (e.g., RBI, UPI, JP Morgan, fraud, blockchain):"
+)
 
+# Topic filter dropdown
 topic_map = {
     "All topics": None,
     "Banking": "banking",
@@ -127,9 +165,10 @@ topic_map = {
     "AI in Banking": "ai_in_banking",
 }
 
-topic_choice = st.selectbox("Filter by Topic", list(topic_map.keys()))
+topic_choice = st.selectbox("Filter by topic", list(topic_map.keys()))
 
-col1, col2 = st.columns([3,1])
+# Timestamp + manual refresh
+col1, col2 = st.columns([3, 1])
 with col1:
     st.caption(f"Last updated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
 with col2:
@@ -138,36 +177,54 @@ with col2:
 
 # ---------------- FETCH DATA ----------------
 
-with st.spinner("Fetching fresh news from NewsData.io…"):
+with st.spinner("Fetching latest news from NewsAPI…"):
     if search_query.strip():
+        # User manually searched → ignore topic filter
         query = search_query.strip()
-        articles = fetch_newsdata_archive(query)
+        articles = fetch_news(query)
     else:
+        # No free-text search → use topics
         if topic_map[topic_choice] is None:
+            # All topics: single combined OR query (saves API calls)
             combined_query = " OR ".join(f"({q})" for q in TOPIC_QUERIES.values())
-            articles = fetch_newsdata_archive(combined_query)
+            articles = fetch_news(combined_query)
         else:
             topic_key = topic_map[topic_choice]
             query = TOPIC_QUERIES[topic_key]
-            articles = fetch_newsdata_archive(query)
-
+            articles = fetch_news(query)
 
 # ---------------- DISPLAY ----------------
 
 if not articles:
-    st.warning("No news found. Try another keyword or topic.")
+    st.warning(
+        "No news found. This could be because:\n"
+        "• The query is too narrow\n"
+        "• Your daily NewsAPI quota is exhausted\n"
+        "• Or there were no matching articles in the last days.\n\n"
+        "Try another keyword, 'All topics', or increase DAYS_BACK in the code."
+    )
 else:
     for a in articles:
         with st.container():
-            cols = st.columns([1,3])
+            cols = st.columns([1, 3])
 
+            # Image column
             with cols[0]:
                 if a["image"]:
-                    st.image(a["image"], use_column_width=True)
+                    try:
+                        st.image(a["image"], use_column_width=True)
+                    except Exception:
+                        st.empty()
+                else:
+                    st.empty()
 
+            # Text column
             with cols[1]:
                 st.markdown(f"### [{a['title']}]({a['url']})")
-                st.caption(f"{a['source']} • {a['published_at'].strftime('%Y-%m-%d %H:%M')}")
-                st.write(a["summary"])
+                st.caption(
+                    f"{a['source']} • {a['published_at'].strftime('%Y-%m-%d %H:%M')}"
+                )
+                if a["summary"]:
+                    st.write(a["summary"])
 
         st.markdown("---")
