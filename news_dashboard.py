@@ -1,170 +1,142 @@
 import streamlit as st
 import requests
-from datetime import datetime, timezone
+from datetime import datetime, timedelta
 from dateutil import parser as date_parser
 
-# ---------- CONFIG ----------
+# ---------------- CONFIG ----------------
 
-# 🔴 IMPORTANT: paste your NewsAPI key here BEFORE deploying
-API_KEY = "aa09c77c5ad841ebaaf1ec387e74f4ab"
+# 🔴 IMPORTANT: paste your GNEWS API key here
+API_KEY = "4991b94d92e7165a2b2fb0d663fb2a7b"
 
-NEWSAPI_ENDPOINT = "https://newsapi.org/v2/everything"
+GNEWS_ENDPOINT = "https://gnews.io/api/v4/search"
+
+# Last 6 months range
+TO_DATE = datetime.utcnow()
+FROM_DATE = TO_DATE - timedelta(days=180)
 
 TOPIC_QUERIES = {
-    "banking": "banking sector",
-    "digital": "digital banking OR online banking",
-    "transformation": "banking digital transformation",
-    "fintech": "fintech AND banking",
-    "neobanks": "neobank OR neobanks OR digital-only bank",
-    "payments": "digital payments AND banking",
-    "ai_in_banking": "artificial intelligence AND banking",
+    "banking": "banking OR banks OR finance sector",
+    "digital": "digital banking OR online banking OR mobile banking",
+    "transformation": "digital transformation banking",
+    "fintech": "fintech OR financial technology OR startup banking",
+    "neobanks": "neobank OR challenger bank OR digital-only bank",
+    "payments": "payments OR digital payments OR UPI OR RTGS",
+    "ai_in_banking": "AI banking OR artificial intelligence banking OR machine learning banking",
 }
 
 
-def normalize_published(published_str: str | None) -> datetime:
-    if not published_str:
-        return datetime.now(timezone.utc)
+# ---------------- HELPERS ----------------
+
+def parse_date(date_str):
     try:
-        dt = date_parser.parse(published_str)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
-        return dt
-    except Exception:
-        return datetime.now(timezone.utc)
+        return date_parser.parse(date_str)
+    except:
+        return datetime.utcnow()
 
 
-def fetch_topic(topic_key: str) -> list[dict]:
-    """Fetch articles for a single topic from NewsAPI."""
-    if not API_KEY or API_KEY == "PASTE_YOUR_NEWSAPI_KEY_HERE":
-        st.error("Please set your NewsAPI API_KEY at the top of the file before deploying.")
-        return []
-
-    query = TOPIC_QUERIES[topic_key]
-
+def fetch_gnews(query):
+    """Fetches fresh news results from GNews API within last 6 months."""
     params = {
         "q": query,
-        "language": "en",
-        "sortBy": "publishedAt",
-        "pageSize": 40,
-        "apiKey": API_KEY,
+        "from": FROM_DATE.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "to": TO_DATE.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "sortby": "publishedAt",
+        "lang": "en",
+        "max": 100,  
+        "apikey": API_KEY,
     }
 
-    resp = requests.get(NEWSAPI_ENDPOINT, params=params, timeout=20)
+    resp = requests.get(GNEWS_ENDPOINT, params=params)
 
     if resp.status_code != 200:
-        st.error(
-            f"NewsAPI request failed for topic '{topic_key}'. "
-            f"Status code: {resp.status_code}, Response: {resp.text[:200]}"
-        )
+        st.error(f"GNews error: {resp.status_code}, response: {resp.text[:200]}")
         return []
 
     data = resp.json()
-    if data.get("status") != "ok":
-        st.error(f"NewsAPI error for topic '{topic_key}': {data}")
-        return []
+    articles = data.get("articles", [])
 
-    articles: list[dict] = []
-    for article in data.get("articles", []):
-        title = article.get("title") or "No Title"
-        url = article.get("url")
-        if not url:
-            continue
+    parsed = []
+    for a in articles:
+        parsed.append({
+            "title": a.get("title"),
+            "url": a.get("url"),
+            "summary": a.get("description"),
+            "source": a.get("source", {}).get("name", "Unknown"),
+            "published_at": parse_date(a.get("publishedAt")),
+            "image": a.get("image"),
+        })
 
-        description = article.get("description") or ""
-        content = article.get("content") or ""
-        text = description if description else content
-
-        max_chars = 260
-        if text and len(text) > max_chars:
-            snippet = text[:max_chars].rsplit(" ", 1)[0] + "..."
-        else:
-            snippet = text
-
-        source_name = (article.get("source") or {}).get("name") or "NewsAPI"
-
-        published_raw = article.get("publishedAt")
-        published_at = normalize_published(published_raw)
-
-        articles.append(
-            {
-                "title": title,
-                "url": url,
-                "summary": snippet,
-                "source": source_name,
-                "published_at": published_at,
-                "topic": topic_key,
-                "image": article.get("urlToImage"),
-            }
-        )
-
-    articles.sort(key=lambda x: x["published_at"], reverse=True)
-    return articles
+    # Sort by newest first
+    parsed.sort(key=lambda x: x["published_at"], reverse=True)
+    return parsed
 
 
-# ---------- STREAMLIT UI ----------
+# ---------------- STREAMLIT UI ----------------
 
 st.set_page_config(page_title="Banking & Fintech News", layout="wide")
 
 st.title("📰 Banking, Fintech & Digital Transformation News")
-st.caption("Live results pulled from NewsAPI, filtered for banking & digital themes.")
+st.caption("Live, real-time news from the last 6 months — sourced from GNews.")
+
+# --- Search Bar ---
+search_query = st.text_input("🔍 Search for any keyword (e.g., RBI, UPI, Blockchain, JP Morgan):")
 
 topic_map = {
     "All topics": None,
     "Banking": "banking",
-    "Digital banking": "digital",
-    "Digital transformation": "transformation",
+    "Digital Banking": "digital",
+    "Digital Transformation": "transformation",
     "Fintech": "fintech",
     "Neobanks": "neobanks",
     "Payments": "payments",
-    "AI in banking": "ai_in_banking",
+    "AI in Banking": "ai_in_banking",
 }
 
-topic_choice = st.selectbox("Filter by topic", list(topic_map.keys()))
+topic_choice = st.selectbox("Filter by Topic", list(topic_map.keys()))
 
-col_left, col_right = st.columns([3, 1])
-with col_left:
-    st.caption(f"Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-with col_right:
-    if st.button("🔄 Refresh now"):
-        st.rerun()
+st.caption(f"Last updated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')}")
 
-with st.spinner("Fetching latest news..."):
-    if topic_map[topic_choice] is None:
-        all_articles: list[dict] = []
-        for key in TOPIC_QUERIES.keys():
-            all_articles.extend(fetch_topic(key))
-        all_articles.sort(key=lambda x: x["published_at"], reverse=True)
-        articles = all_articles
+if st.button("🔄 Refresh"):
+    st.rerun()
+
+# ---------------- DATA FETCH ----------------
+
+with st.spinner("Fetching latest news…"):
+    articles = []
+
+    if search_query.strip():
+        articles = fetch_gnews(search_query.strip())
     else:
-        topic_key = topic_map[topic_choice]
-        articles = fetch_topic(topic_key)
+        if topic_map[topic_choice] is None:
+            # Fetch all topics combined
+            for key in TOPIC_QUERIES:
+                articles.extend(fetch_gnews(TOPIC_QUERIES[key]))
+        else:
+            topic_key = topic_map[topic_choice]
+            articles = fetch_gnews(TOPIC_QUERIES[topic_key])
+
+    articles.sort(key=lambda x: x["published_at"], reverse=True)
+
+
+# ---------------- DISPLAY ----------------
 
 if not articles:
-    st.info(
-        "No articles found for this topic.\n\n"
-        "• Check that your NewsAPI key is set correctly\n"
-        "• Check that you haven't exceeded the free quota"
-    )
+    st.warning("No news found. Try changing topic or search term.")
 else:
     for a in articles:
         with st.container():
             cols = st.columns([1, 3])
 
             with cols[0]:
-                if a.get("image"):
+                if a["image"]:
                     st.image(a["image"], use_column_width=True)
                 else:
                     st.empty()
 
             with cols[1]:
-                st.markdown(f"#### [{a['title']}]({a['url']})")
-                meta = (
-                    f"Source: {a['source']} · "
-                    f"Published: {a['published_at'].strftime('%Y-%m-%d %H:%M')} · "
-                    f"Topic: {a['topic']}"
+                st.markdown(f"### [{a['title']}]({a['url']})")
+                st.caption(
+                    f"{a['source']} • {a['published_at'].strftime('%Y-%m-%d %H:%M')}"
                 )
-                st.caption(meta)
-                if a.get("summary"):
-                    st.write(a["summary"])
-
+                st.write(a["summary"] or "")
         st.markdown("---")
