@@ -5,65 +5,76 @@ from dateutil import parser as date_parser
 
 # ---------------- CONFIG ----------------
 
-# 🔴 REPLACE THESE WITH YOUR REAL VALUES:
-API_KEY = "YOUR_BING_API_KEY_HERE"
-ENDPOINT = "https://api.bing.microsoft.com/v7.0/news/search"
+# 🔴 REPLACE WITH YOUR TheNewsAPI.com KEY
+API_KEY = "eHdpLknQzjxQJSseM0eJjekQM55WsBFZhepT49rf"
 
-# How many days of news you want:
-DAYS_BACK = 3  # <-- change to 7 or 30 if needed
+ENDPOINT = "https://api.thenewsapi.com/v1/news/all"
 
-FROM_DATE = (datetime.utcnow() - timedelta(days=DAYS_BACK)).strftime("%Y-%m-%dT%H:%M:%SZ")
+# Number of days you want
+DAYS_BACK = 3   # change to 7, 30, etc. if needed
 
 TOPIC_QUERIES = {
-    "banking": "banking OR banks OR financial sector",
+    "banking": "banking OR banks OR banking sector",
     "digital": "digital banking OR online banking OR mobile banking",
     "transformation": "digital transformation banking",
-    "fintech": "fintech OR financial technology",
-    "neobanks": "neobank OR challenger bank",
-    "payments": "digital payments OR payment systems",
-    "ai_in_banking": "AI banking OR artificial intelligence banking",
+    "fintech": "fintech OR financial technology OR startup finance",
+    "neobanks": "neobank OR challenger bank OR digital-only bank",
+    "payments": "digital payments OR UPI OR RTGS OR payment rails",
+    "ai_in_banking": "AI banking OR artificial intelligence banking OR machine learning banking",
 }
 
 
 # ---------------- HELPERS ----------------
 
-def fetch_bing_news(query):
-    """Fetch news articles from Bing News Search."""
-    headers = {
-        "Ocp-Apim-Subscription-Key": API_KEY
-    }
+def parse_date(date_str):
+    try:
+        return date_parser.parse(date_str)
+    except:
+        return datetime.utcnow()
 
-    params = {
-        "q": query,
-        "count": 50,
-        "sortBy": "Date",
-        "freshness": f"{DAYS_BACK}day",
-        "textFormat": "Raw",
-        "safeSearch": "Off",
-    }
 
-    resp = requests.get(ENDPOINT, headers=headers, params=params)
-    
-    if resp.status_code != 200:
-        st.error(f"Bing News error: {resp.status_code} → {resp.text[:200]}")
-        return []
+def fetch_thenewsapi(query, pages=3):
+    """
+    Fetches news results from TheNewsAPI.com
+    - Supports pagination
+    - Supports custom queries
+    """
+    articles = []
 
-    data = resp.json()
-    articles = data.get("value", [])
+    for page in range(1, pages + 1):
+        params = {
+            "api_token": API_KEY,
+            "search": query,
+            "language": "en",
+            "sort": "published_at",
+            "published_after": (datetime.utcnow() - timedelta(days=DAYS_BACK)).isoformat(),
+            "page": page,
+            "limit": 50,  # max allowed per page
+        }
 
-    parsed = []
-    for a in articles:
-        parsed.append({
-            "title": a.get("name"),
-            "url": a.get("url"),
-            "summary": a.get("description"),
-            "source": (a.get("provider") or [{}])[0].get("name", "Unknown"),
-            "published_at": date_parser.parse(a["datePublished"]) if "datePublished" in a else datetime.utcnow(),
-            "image": a.get("image", {}).get("thumbnail", {}).get("contentUrl"),
-        })
+        resp = requests.get(ENDPOINT, params=params)
 
-    parsed.sort(key=lambda x: x["published_at"], reverse=True)
-    return parsed
+        if resp.status_code != 200:
+            st.error(f"TheNewsAPI error: {resp.status_code} → {resp.text[:200]}")
+            break
+
+        data = resp.json()
+        page_articles = data.get("data", [])
+        if not page_articles:
+            break
+
+        for a in page_articles:
+            articles.append({
+                "title": a.get("title"),
+                "url": a.get("url"),
+                "summary": a.get("description"),
+                "source": a.get("source"),
+                "published_at": parse_date(a.get("published_at")),
+                "image": a.get("image_url"),
+            })
+
+    articles.sort(key=lambda x: x["published_at"], reverse=True)
+    return articles
 
 
 # ---------------- STREAMLIT UI ----------------
@@ -71,10 +82,10 @@ def fetch_bing_news(query):
 st.set_page_config(page_title="Banking & Fintech News", layout="wide")
 
 st.title("📰 Banking, Fintech & Digital Transformation News")
-st.caption(f"Live news from Bing News Search — last {DAYS_BACK} days.")
+st.caption(f"Live news from TheNewsAPI.com — last {DAYS_BACK} days.")
 
 # Search bar
-search_query = st.text_input("🔍 Search any keyword (e.g., RBI, UPI, Fintech funding):")
+search_input = st.text_input("🔍 Search any keyword (e.g., UPI, RBI, fintech funding, JP Morgan):")
 
 # Topic filter
 topic_map = {
@@ -88,9 +99,9 @@ topic_map = {
     "AI in Banking": "ai_in_banking",
 }
 
-topic_choice = st.selectbox("Filter by topic", list(topic_map.keys()))
+topic_choice = st.selectbox("Filter by Topic", list(topic_map.keys()))
 
-# Refresh & timestamp
+# Timestamp & refresh
 col1, col2 = st.columns([3,1])
 with col1:
     st.caption(f"Last updated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')}")
@@ -100,38 +111,41 @@ with col2:
 
 
 # ---------------- FETCH DATA ----------------
-with st.spinner("Fetching latest news…"):
-    articles = []
-
-    if search_query.strip():
-        articles = fetch_bing_news(search_query)
+with st.spinner("Fetching the latest news…"):
+    if search_input.strip():
+        # Use custom search
+        articles = fetch_thenewsapi(search_input.strip(), pages=3)
     else:
+        # Use topic filter or "All topics"
         if topic_map[topic_choice] is None:
-            for key in TOPIC_QUERIES:
-                articles.extend(fetch_bing_news(TOPIC_QUERIES[key]))
+            combined_query = " OR ".join(f"({q})" for q in TOPIC_QUERIES.values())
+            articles = fetch_thenewsapi(combined_query, pages=4)
         else:
             topic_key = topic_map[topic_choice]
-            articles = fetch_bing_news(TOPIC_QUERIES[topic_key])
+            query = TOPIC_QUERIES[topic_key]
+            articles = fetch_thenewsapi(query, pages=3)
 
-    articles.sort(key=lambda x: x["published_at"], reverse=True)
 
-
-# ---------------- SHOW ARTICLES ----------------
+# ---------------- DISPLAY ----------------
 
 if not articles:
-    st.warning("No news found. Try a different topic or search keyword.")
+    st.warning("No news found. Try a different keyword or topic.")
 else:
     for a in articles:
         with st.container():
             cols = st.columns([1, 3])
 
+            # Image
             with cols[0]:
                 if a["image"]:
                     st.image(a["image"], use_column_width=True)
 
+            # Text
             with cols[1]:
                 st.markdown(f"### [{a['title']}]({a['url']})")
-                st.caption(f"{a['source']} • {a['published_at'].strftime('%Y-%m-%d %H:%M')}")
+                st.caption(
+                    f"{a['source']} • {a['published_at'].strftime('%Y-%m-%d %H:%M')}"
+                )
                 st.write(a["summary"] or "")
 
         st.markdown("---")
