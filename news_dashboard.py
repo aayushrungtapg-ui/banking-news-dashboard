@@ -14,8 +14,8 @@ DAYS_BACK = 3              # how many days of news
 MAX_API_PAGES = 5          # how many pages to fetch from NewsAPI
 API_PAGE_SIZE = 50         # how many articles per page from NewsAPI
 
-UI_PAGE_SIZE = 50          # how many cards you want per UI page
-MAX_UI_PAGES = 5           # max pages you want user to be able to click through
+UI_PAGE_SIZE = 50          # how many cards per UI page
+MAX_UI_PAGES = 5           # max UI pages (50 * 5 = 250 articles)
 
 TOPIC_QUERIES = {
     "Banking": 'banking OR "banking sector" OR "retail banking"',
@@ -44,34 +44,48 @@ body, .stApp {
     margin-bottom: 0.5rem;
 }
 
-/* News cards */
+/* News cards - FIXED HEIGHT & CLEAN GRID */
 .news-card {
     background: #ffffff;
-    border-radius: 14px;
+    border-radius: 16px;
     padding: 0;
     overflow: hidden;
     box-shadow: 0 4px 12px rgba(15, 23, 42, 0.08);
     display: flex;
     flex-direction: column;
-    height: 100%;
+    height: 320px;             /* 👈 fixed total height */
 }
+
+/* Fixed image height */
 .news-card img {
     width: 100%;
-    height: 180px;
+    height: 140px;             /* 👈 fixed image height */
     object-fit: cover;
 }
+
+/* Content area fills rest of card */
 .news-card-content {
-    padding: 0.8rem 0.9rem 0.9rem 0.9rem;
+    flex: 1;
+    padding: 0.75rem 0.9rem 0.85rem 0.9rem;
     display: flex;
     flex-direction: column;
+    justify-content: flex-start;
     gap: 0.35rem;
 }
+
+/* Title clamped to 2 lines */
 .news-card-title {
     font-size: 0.95rem;
     font-weight: 600;
     line-height: 1.25rem;
     margin: 0;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;     /* 👈 max 2 lines */
+    -webkit-box-orient: vertical;
+    overflow: hidden;
 }
+
+/* Title link styling */
 .news-card-title a {
     color: #111827;
     text-decoration: none;
@@ -79,14 +93,24 @@ body, .stApp {
 .news-card-title a:hover {
     text-decoration: underline;
 }
+
+/* Meta row */
 .news-card-meta {
     font-size: 0.7rem;
     color: #6b7280;
 }
+
+/* Snippet clamped to 3 lines */
 .news-card-snippet {
     font-size: 0.78rem;
     color: #4b5563;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;     /* 👈 max 3 lines */
+    -webkit-box-orient: vertical;
+    overflow: hidden;
 }
+
+/* Section label */
 .section-label {
     font-size: 0.8rem;
     text-transform: uppercase;
@@ -170,7 +194,8 @@ def fetch_news(query, days_back=DAYS_BACK, max_pages=MAX_API_PAGES, page_size=AP
             content = article.get("content") or ""
             text = description if description else content
 
-            max_chars = 220
+            # shorter snippet so card stays compact
+            max_chars = 160
             if text and len(text) > max_chars:
                 snippet = text[:max_chars].rsplit(" ", 1)[0] + "..."
             else:
@@ -237,7 +262,7 @@ with right_col:
         key="search_bar",
     )
 
-    # Figure out which query we are running
+    # Decide which query to run
     if search_query.strip():
         query = search_query.strip()
         feed_title = f"Results for: **{query}**"
@@ -277,7 +302,6 @@ with right_col:
         total_pages = math.ceil(total_articles / UI_PAGE_SIZE)
         total_pages = min(total_pages, MAX_UI_PAGES)
 
-        # Clamp current page
         if st.session_state.page_num < 1:
             st.session_state.page_num = 1
         if st.session_state.page_num > total_pages:
@@ -330,15 +354,16 @@ with right_col:
         with pag_left:
             if st.button("⬅ Previous", disabled=(page_num <= 1)):
                 st.session_state.page_num = max(1, page_num - 1)
-                st.experimental_rerun()
+                st.rerun()
         with pag_mid:
             st.markdown(
                 f"<p style='text-align:center;font-size:0.85rem;color:#6b7280;'>"
-                f"Page {page_num} of {total_pages} • Showing {len(page_articles)} of {total_articles} articles"
+                f"Page {page_num} of {total_pages} • "
+                f"Showing {len(page_articles)} of {total_articles} articles"
                 f"</p>",
                 unsafe_allow_html=True,
             )
         with pag_right:
             if st.button("Next ➡", disabled=(page_num >= total_pages)):
                 st.session_state.page_num = min(total_pages, page_num + 1)
-                st.experimental_rerun()
+                st.rerun()
